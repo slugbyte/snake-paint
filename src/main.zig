@@ -2,63 +2,125 @@ const std = @import("std");
 const info = std.debug.print;
 const c = @import("./c.zig").c;
 const gl = @import("./gl.zig");
+const Window = @import("./window.zig");
+const Allocator = std.mem.Allocator;
+const Shader = @import("./Shader.zig");
 
-const Err = error{
-    GlfwInit,
-    GlfwCreateWindow,
-    GladLoadGl,
-    GlCompileShader,
-    GlProgramLink,
+const Color = enum {
+    Black,
+    White,
+    BlueA,
+    BlueB,
+    BlueC,
+    BlueD,
 };
 
-pub fn main() !void {
-    if (c.glfwInit() != c.GLFW_TRUE) {
-        return Err.GlfwInit;
-    }
-    c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
-    c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 3);
-    c.glfwWindowHint(c.GLFW_OPENGL_PROFILE, c.GLFW_OPENGL_CORE_PROFILE);
-    c.glfwWindowHint(c.GLFW_OPENGL_FORWARD_COMPAT, c.GL_TRUE);
-    c.glfwSwapInterval(1);
+const GlShape = struct {
+    vao: c_uint,
+    ebo: c_uint,
+    vbo: c_uint,
+};
 
-    const maby_window = c.glfwCreateWindow(1000, 1000, "OKPT", null, null);
-    if (maby_window == null) {
-        return Err.GlfwCreateWindow;
-    }
+const Shape = enum {
+    TriA,
+    TriB,
+    TriC,
+    TriD,
+    Rect,
+};
 
-    const window = maby_window.?;
-    c.glfwMakeContextCurrent(window);
+const Mode = enum {
+    Insert,
+    Visual,
+};
 
-    gl.load({}, windowGlProcAddressGet) catch {
-        return Err.GladLoadGl;
-    };
-    _ = c.glfwSetFramebufferSizeCallback(window, windowResizeCallback);
-    info("all your paint are belong to triangle!\n\n", .{});
-    info("press q to quit\n", .{});
-    while (c.glfwWindowShouldClose(window) != 1) {
-        if (c.glfwGetKey(window, c.GLFW_KEY_Q) == c.GLFW_PRESS) {
+const Mark = struct {
+    color: Color,
+    shape: Shape,
+};
+
+const Direction = enum {
+    Up,
+    Down,
+    Left,
+    Right,
+};
+
+const Action = union(enum) {
+    NextShape,
+    NextColor,
+    PaintShape,
+    PaintBackground,
+    Move: Direction,
+    Undo,
+    Redo,
+};
+
+const State = struct {
+    width: u32,
+    height: u32,
+    mark_list: []Mark,
+    current_shape: Shape,
+    current_color: Color,
+};
+
+var alley: Allocator = undefined;
+var blue_shader_source = @embedFile("./shader/blue.glsl");
+var blue_shader: Shader = undefined;
+var test_vao_id: c_uint = undefined;
+var test_vbo_id: c_uint = undefined;
+var test_vertex_list = [_]f32{
+    -0.5, 0.5,
+    -0.5, -0.5,
+    0.5,  -0.5,
+};
+
+pub fn onLoad() !Window.Action {
+    info("onLoad!\n", .{});
+    blue_shader = try Shader.init(alley, "blue", blue_shader_source);
+
+    gl.genVertexArrays(1, &test_vao_id);
+    gl.genBuffers(1, &test_vbo_id);
+
+    gl.bindVertexArray(test_vao_id);
+    gl.bindBuffer(gl.ARRAY_BUFFER, test_vbo_id);
+    gl.bufferData(gl.ARRAY_BUFFER, 6 * @sizeOf(f32), &test_vertex_list, gl.STATIC_DRAW);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, gl.FALSE, 2 * @sizeOf(f32), @intToPtr(?*const anyopaque, 0));
+    gl.enableVertexAttribArray(0);
+
+    return .Continue;
+}
+
+pub fn onDraw() !void {
+    gl.clearColor(1, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    blue_shader.bind();
+    gl.bindVertexArray(test_vao_id);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+pub fn onKey(key: Window.Key) !Window.Action {
+    return switch (key) {
+        .Q => {
             info("byebye!\n", .{});
-            _ = c.glfwSetWindowShouldClose(window, c.GLFW_TRUE);
-        }
-
-        gl.clearColor(0, 0, 1.0, 0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-
-        c.glfwSwapBuffers(window);
-        c.glfwPollEvents();
-    }
+            return .Quit;
+        },
+        else => .Continue,
+    };
 }
 
-pub fn windowGlProcAddressGet(p: void, proc_name: [:0]const u8) ?gl.FunctionPointer {
-    _ = p;
-    if (c.glfwGetProcAddress(proc_name)) |proc_address| {
-        return proc_address;
-    }
-    return null;
-}
+pub fn main() !void {
+    info("all your paint are belong to triangle!\n", .{});
+    var GPA = std.heap.GeneralPurposeAllocator(.{}){};
+    alley = GPA.allocator();
 
-pub fn windowResizeCallback(window: ?*c.GLFWwindow, width: c_int, height: c_int) callconv(.C) void {
-    // info("window size w:{d} h:{d}\n", .{ width, height });
-    gl.viewport(0, 0, width, height);
-    _ = window;
+    var window = try Window.init(.{
+        .onLoad = &onLoad,
+        .onDraw = &onDraw,
+        .onKey = &onKey,
+    });
+    defer window.deinit();
+
+    try window.drawUntilQuit();
 }
