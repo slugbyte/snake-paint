@@ -3,6 +3,11 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const zlm_module = b.addModule("zlm", .{
+        .source_file = .{ .path = "./res/package/zlm/src/zlm.zig" },
+    });
+
     const exe = b.addExecutable(.{
         .name = "okpt",
         .root_source_file = .{ .path = "src/main.zig" },
@@ -15,6 +20,7 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("X11");
     exe.linkSystemLibrary("gl");
     exe.linkLibC();
+    exe.addModule("zlm", zlm_module);
     b.installArtifact(exe);
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

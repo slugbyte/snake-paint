@@ -1,6 +1,7 @@
 // import
 const std = @import("std");
 const gl = @import("./gl.zig");
+const zlm = @import("zlm");
 
 // alias
 const Allocator = std.mem.Allocator;
@@ -104,6 +105,32 @@ pub fn bind(self: *Self) void {
 pub fn unbind(self: *Self) void {
     _ = self;
     gl.useProgram(0);
+}
+
+pub fn setUniformVec3(self: *Self, name: []const u8, x: f32, y: f32, z: f32) void {
+    const uniform_location = gl.getUniformLocation(self.program_id, name.ptr);
+    gl.uniform3f(uniform_location, x, y, z);
+}
+
+pub fn setUniformVec4(self: *Self, name: []const u8, x: f32, y: f32, z: f32, w: f32) void {
+    const uniform_location = gl.getUniformLocation(self.program_id, name.ptr);
+    gl.uniform4f(uniform_location, x, y, z, w);
+}
+
+pub fn setUniformFloat(self: *Self, name: []const u8, value: f32) void {
+    const uniform_location = gl.getUniformLocation(self.program_id, name.ptr);
+    gl.uniform1f(uniform_location, value);
+}
+
+pub fn setUniformVec2(self: *Self, name: []const u8, x: f32, y: f32) void {
+    const uniform_location = gl.getUniformLocation(self.program_id, name.ptr);
+    gl.uniform2f(uniform_location, x, y);
+}
+
+pub fn setUniformMat4(self: *Self, name: []const u8, matrix: zlm.Mat4) void {
+    const data: []f32 = &matrix.fields[0] ++ &matrix.fields[1] ++ &matrix.fields[2] ++ &matrix.fields[3];
+    const uniform_location = gl.getUniformLocation(self.program_id, name.ptr);
+    gl.uniformMatrix4fv(uniform_location, 16, gl.FALSE, data.ptr);
 }
 
 // pravate delcs
