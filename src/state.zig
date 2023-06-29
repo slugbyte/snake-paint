@@ -1,6 +1,5 @@
 // import
 const std = @import("std");
-const zlm = @import("zlm");
 const c = @import("./c.zig").c;
 const gl = @import("./gl.zig");
 const Window = @import("./window.zig").Window;
