@@ -6,369 +6,301 @@ const gl = @import("./gl.zig");
 const Window = @import("./window.zig").Window;
 const Shader = @import("./Shader.zig");
 const Shape = @import("./Shape.zig");
+const stamp = @import("./stamp.zig");
+const Slider = @import("./Slider.zig");
+const state_mod = @import("./state.zig");
+const color = @import("color.zig");
 
 // alias
 const info = std.debug.print;
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+const State = state_mod.State;
+const Layer = state_mod.Layer;
+const LayerList = state_mod.LayerList;
+const MarkList = state_mod.MarkList;
+const Cursor = state_mod.Cursor;
+const RGBColor = color.RGBColor;
+const HSLColor = color.HSLColor;
+const Stamp = stamp.Stamp;
 
-// type
-const Color = enum {
-    Black,
-    White,
-    BlueA,
-    BlueB,
-    BlueC,
-    BlueD,
-};
-
-const Stamp = enum {
-    TriA,
-    TriB,
-    TriC,
-    TriD,
-    Rect,
-};
-
-const Layer = enum {
-    Background,
-    Foreground,
-};
-
-const Mode = enum {
-    Insert,
-    Visual,
-};
-
-const Mark = struct {
-    color: Color,
-    stamp: Stamp,
-};
-
-const Direction = enum {
-    Up,
-    Down,
-    Left,
-    Right,
-};
-
-const Action = union(enum) {
-    NextStamp,
-    NextColor,
-    PaintStamp,
-    PaintBackground,
-    Move: Direction,
-    Undo,
-    Redo,
-};
-
-const State = struct {
-    layer_bg_width: u32,
-    layer_bg_height: u32,
-    layer_bg_data: []?Mark,
-    layer_fg_width: u32,
-    layer_fg_height: u32,
-    layer_fg_data: []?Mark,
-    cursor_x: u32,
-    cursor_y: u32,
-    current_stamp: Stamp,
-    current_color: Color,
-    current_layer: Layer,
-};
-
-var alley: Allocator = undefined;
 var cell_shader_source = @embedFile("./shader/cell.glsl");
 var cell_shader: Shader = undefined;
-
-var triangle_a: Shape = undefined;
-var triangle_b: Shape = undefined;
-var triangle_c: Shape = undefined;
-var triangle_d: Shape = undefined;
-var rectangle: Shape = undefined;
+var fixed_shader_source = @embedFile("./shader/fixed.glsl");
+var fixed_shader: Shader = undefined;
 
 const Win = Window(State);
 
+/// onLoad runs after window and opengl have been succefully initialized
 pub fn onLoad(win: *Win, state: *State) !Win.Action {
     _ = win;
-    _ = state;
-    info("onLoad!\n", .{});
-    cell_shader = try Shader.init(alley, "cell", cell_shader_source);
-    initizeShapes();
+    cell_shader = try Shader.init(state.allocator, "cell", cell_shader_source);
+    fixed_shader = try Shader.init(state.allocator, "fixed", fixed_shader_source);
+    stamp.initializeShapes();
     return .Continue;
 }
 
-pub fn renderStamp(stamp: Stamp) void {
-    switch (stamp) {
-        .TriA => triangle_a.render(),
-        .TriB => triangle_b.render(),
-        .TriC => triangle_c.render(),
-        .TriD => triangle_d.render(),
-        .Rect => rectangle.render(),
-    }
+pub fn drawCanvasBackground(win: *Win, state: *State) void {
+    const canvas_width: f32 = @intToFloat(f32, state.canvas_width);
+    const canvas_height: f32 = @intToFloat(f32, state.canvas_height);
+    cell_shader.bind();
+    cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.window_size.width), @intToFloat(f32, win.window_size.height));
+    cell_shader.setUniformVec2("canvas_size", @intToFloat(f32, state.canvas_width), @intToFloat(f32, state.canvas_width));
+    cell_shader.setUniformVec4("cell_spec", 0, 0, canvas_width, canvas_height);
+    cell_shader.setUniformVec3("fg_color", 1, 1, 1);
+    stamp.rectangle.render();
 }
 
-pub fn drawBackground(win: *Win, state: *State) void {
-    for (state.layer_bg_data, 0..) |maby_mark, offset| {
-        if (maby_mark) |mark| {
-            const cell_y: f32 = @intToFloat(f32, offset / state.layer_bg_width);
-            const cell_x: f32 = @intToFloat(f32, offset - (state.layer_bg_width * @floatToInt(u32, cell_y)));
+pub fn drawLayerList(win: *Win, state: *State) void {
+    for (state.layer_list.items) |layer| {
+        for (layer.mark_list.items) |mark| {
+            const mark_width = @intToFloat(f32, state.canvas_width) / @intToFloat(f32, layer.width);
+            const mark_height = @intToFloat(f32, state.canvas_height) / @intToFloat(f32, layer.height);
+            const mark_x = @intToFloat(f32, mark.x);
+            const mark_y = @intToFloat(f32, mark.y);
             cell_shader.bind();
-            cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.width), @intToFloat(f32, win.height));
-            cell_shader.setUniformVec4("cell_spec", cell_x, cell_y, 100, 100);
-
-            switch (mark.color) {
-                .White => cell_shader.setUniformVec3("fg_color", 1.0, 1.0, 1.0),
-                .Black => cell_shader.setUniformVec3("fg_color", 0.0, 0.0, 0.0),
-                .BlueA => cell_shader.setUniformVec3("fg_color", 0.0, 0.141, 0.278),
-                .BlueB => cell_shader.setUniformVec3("fg_color", 0.086, 0.219, 0.347),
-                .BlueC => cell_shader.setUniformVec3("fg_color", 0.207, 0.367, 0.515),
-                .BlueD => cell_shader.setUniformVec3("fg_color", 0.381, 0.593, 0.796),
-            }
-
-            renderStamp(mark.stamp);
-        }
-    }
-}
-
-pub fn drawForeground(win: *Win, state: *State) void {
-    for (state.layer_fg_data, 0..) |maby_mark, offset| {
-        if (maby_mark) |mark| {
-            const cell_y: f32 = @intToFloat(f32, offset / state.layer_fg_width);
-            const cell_x: f32 = @intToFloat(f32, offset - (state.layer_fg_width * @floatToInt(u32, cell_y)));
-            cell_shader.bind();
-            cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.width), @intToFloat(f32, win.height));
-            cell_shader.setUniformVec4("cell_spec", cell_x, cell_y, 50, 50);
-
-            switch (mark.color) {
-                .White => cell_shader.setUniformVec3("fg_color", 1.0, 1.0, 1.0),
-                .Black => cell_shader.setUniformVec3("fg_color", 0.0, 0.0, 0.0),
-                .BlueA => cell_shader.setUniformVec3("fg_color", 0.0, 0.141, 0.278),
-                .BlueB => cell_shader.setUniformVec3("fg_color", 0.086, 0.219, 0.347),
-                .BlueC => cell_shader.setUniformVec3("fg_color", 0.207, 0.367, 0.515),
-                .BlueD => cell_shader.setUniformVec3("fg_color", 0.381, 0.593, 0.796),
-            }
-
-            renderStamp(mark.stamp);
+            cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.window_size.width), @intToFloat(f32, win.window_size.height));
+            cell_shader.setUniformVec2("canvas_size", @intToFloat(f32, state.canvas_width), @intToFloat(f32, state.canvas_height));
+            cell_shader.setUniformVec4("cell_spec", mark_x, mark_y, mark_width, mark_height);
+            cell_shader.setUniformVec3("fg_color", mark.color.red, mark.color.green, mark.color.blue);
+            mark.stamp.draw();
         }
     }
 }
 
 pub fn drawCursor(win: *Win, state: *State) void {
-    switch (state.current_layer) {
-        .Background => {
-            const cell_y: f32 = @intToFloat(f32, state.cursor_y);
-            const cell_x: f32 = @intToFloat(f32, state.cursor_x);
-            cell_shader.bind();
-            cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.width), @intToFloat(f32, win.height));
-            cell_shader.setUniformVec4("cell_spec", cell_x, cell_y, 100, 100);
-            cell_shader.setUniformVec3("fg_color", 1.0, 0.141, 0.278);
-            renderStamp(state.current_stamp);
-        },
-        .Foreground => {
-            const cell_y: f32 = @intToFloat(f32, state.cursor_y);
-            const cell_x: f32 = @intToFloat(f32, state.cursor_x);
-            cell_shader.bind();
-            cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.width), @intToFloat(f32, win.height));
-            cell_shader.setUniformVec4("cell_spec", cell_x, cell_y, 50, 50);
-            cell_shader.setUniformVec3("fg_color", 1.0, 0.141, 0.278);
-            renderStamp(state.current_stamp);
-        },
+    const current_layer = &state.layer_list.items[state.layer_index];
+    const cursor_width = @intToFloat(f32, state.canvas_width) / @intToFloat(f32, current_layer.width);
+    const cursor_height = @intToFloat(f32, state.canvas_height) / @intToFloat(f32, current_layer.height);
+    const cursor_x = @intToFloat(f32, state.cursor.x);
+    const cursor_y = @intToFloat(f32, state.cursor.y);
+    cell_shader.bind();
+    cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.window_size.width), @intToFloat(f32, win.window_size.height));
+    cell_shader.setUniformVec2("canvas_size", @intToFloat(f32, state.canvas_width), @intToFloat(f32, state.canvas_height));
+    cell_shader.setUniformVec4("cell_spec", cursor_x, cursor_y, cursor_width, cursor_height);
+    cell_shader.setUniformVec3("fg_color", 1.0, 0.141, 0.278);
+    state.current_stamp.draw();
+}
+
+pub fn drawHud(win: *Win, state: *State) void {
+    // draw hsl
+    const prev_hsl = state.color.toHSLColor();
+    state.color_hue_slider.value = prev_hsl.hue;
+    state.color_light_slider.value = prev_hsl.light;
+    state.color_saturation_slider.value = prev_hsl.saturation;
+    state.color_hue_slider.updateAndRender(win.window_size, win.mouse_state, &fixed_shader);
+    state.color_light_slider.updateAndRender(win.window_size, win.mouse_state, &fixed_shader);
+    state.color_saturation_slider.updateAndRender(win.window_size, win.mouse_state, &fixed_shader);
+
+    // update hsl
+    state.color = (HSLColor{
+        .hue = state.color_hue_slider.value,
+        .light = state.color_light_slider.value,
+        .saturation = state.color_saturation_slider.value,
+    }).toRGBColor();
+
+    // draw rgb
+    state.color_red_slider.value = state.color.red;
+    state.color_green_slider.value = state.color.green;
+    state.color_blue_slider.value = state.color.blue;
+    state.color_red_slider.updateAndRender(win.window_size, win.mouse_state, &fixed_shader);
+    state.color_green_slider.updateAndRender(win.window_size, win.mouse_state, &fixed_shader);
+    state.color_blue_slider.updateAndRender(win.window_size, win.mouse_state, &fixed_shader);
+
+    // update rgb
+    state.color.red = state.color_red_slider.value;
+    state.color.green = state.color_green_slider.value;
+    state.color.blue = state.color_blue_slider.value;
+
+    // draw selected stamp with selected color
+    fixed_shader.bind();
+    fixed_shader.setUniformVec2("window_size", @intToFloat(f32, win.window_size.width), @intToFloat(f32, win.window_size.height));
+    fixed_shader.setUniformVec4("dimention", @intToFloat(f32, win.window_size.width - 120), @intToFloat(f32, win.window_size.height - 120), 100, 100);
+    fixed_shader.setUniformVec3("fg_color", state.color.red, state.color.green, state.color.blue);
+    state.current_stamp.draw();
+}
+
+// onDraw happens once per frame after onKey
+pub fn onDraw(win: *Win, state: *State) !void {
+    drawCanvasBackground(win, state);
+    drawLayerList(win, state);
+    if (state.show_cursor) {
+        drawCursor(win, state);
+    }
+    if (state.show_hud) {
+        drawHud(win, state);
     }
 }
 
-pub fn onDraw(win: *Win, state: *State) !void {
-    // _ = win;
-    // _ = state;
-    // info("{any}\n", .{state.*});
-    gl.clearColor(0.91, 0.51, 0.91, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-
-    drawBackground(win, state);
-    drawForeground(win, state);
-    drawCursor(win, state);
-    // cell_shader.setUniformMat4("projection", orth);
-}
-
+// onKey happens once per frame when before onDraw
 pub fn onKey(win: *Win, state: *State, key: Win.Key) !Win.Action {
     _ = win;
     return switch (key) {
-        .Right => {
-            state.cursor_x += 1;
+        .O => {
+            const current_layer = &state.layer_list.items[state.layer_index];
+            state.cursor.move(current_layer, .Right);
             return .Continue;
         },
-        .Left => {
-            if (state.cursor_x > 0) {
-                state.cursor_x -= 1;
-            }
+        .Y => {
+            const current_layer = &state.layer_list.items[state.layer_index];
+            state.cursor.move(current_layer, .Left);
             return .Continue;
         },
-        .Up => {
-            if (state.cursor_y > 0) {
-                state.cursor_y -= 1;
-            }
+        .E => {
+            const current_layer = &state.layer_list.items[state.layer_index];
+            state.cursor.move(current_layer, .Up);
             return .Continue;
         },
-        .Down => {
-            state.cursor_y += 1;
+        .N => {
+            const current_layer = &state.layer_list.items[state.layer_index];
+            state.cursor.move(current_layer, .Down);
             return .Continue;
         },
         .L => {
-            state.current_layer = switch (state.current_layer) {
-                .Background => .Foreground,
-                .Foreground => .Background,
-            };
-            info("seleced layer {any}\n", .{state.current_layer});
+            state.layerNext();
             return .Continue;
         },
-        .W => {
-            info("time to mark\n", .{});
-            switch (state.current_layer) {
-                .Background => {
-                    const offset: usize = (state.cursor_y * state.layer_bg_width) + state.cursor_x;
-                    state.layer_bg_data[offset] = .{
-                        .color = state.current_color,
-                        .stamp = state.current_stamp,
-                    };
-                    info("{d},{d} is now {any}\n ", .{ state.cursor_x, state.cursor_y, state.current_stamp });
-                    return .Continue;
-                },
-                .Foreground => {
-                    const offset: usize = (state.cursor_y * state.layer_fg_width) + state.cursor_x;
-                    state.layer_fg_data[offset] = .{
-                        .color = state.current_color,
-                        .stamp = state.current_stamp,
-                    };
-                    info("{d},{d} is now {any}\n ", .{ state.cursor_x, state.cursor_y, state.current_stamp });
-                    return .Continue;
-                },
-            }
+        .T => {
+            state.is_togle_mode = true;
+            return .Continue;
         },
-        .X => {
-            const offset: usize = (state.cursor_y * state.layer_bg_width) + state.cursor_x;
-            state.layer_bg_data[offset] = null;
+        .Escape => {
+            state.is_togle_mode = false;
             return .Continue;
         },
         .C => {
-            state.current_color = switch (state.current_color) {
-                .Black => .White,
-                .White => .BlueA,
-                .BlueA => .BlueB,
-                .BlueB => .BlueC,
-                .BlueC => .BlueD,
-                .BlueD => .Black,
-            };
-            info("selected color: {any}\n", .{state.current_color});
+            if (state.is_togle_mode) {
+                state.show_cursor = !state.show_cursor;
+                state.is_togle_mode = false;
+            }
+            return .Continue;
+        },
+        .H => {
+            if (state.is_togle_mode) {
+                state.show_hud = !state.show_hud;
+                state.is_togle_mode = false;
+            }
+            return .Continue;
+        },
+        .Space => {
+            try state.markInsert();
+            return .Continue;
+        },
+        .Backspace => {
+            try state.markRemove();
             return .Continue;
         },
         .S => {
-            state.current_stamp = switch (state.current_stamp) {
-                .Rect => .TriA,
-                .TriA => .TriB,
-                .TriB => .TriC,
-                .TriC => .TriD,
-                .TriD => .Rect,
-            };
-            info("selected stamp: {any}\n", .{state.current_stamp});
+            state.stampNext();
             return .Continue;
         },
         .Q => {
             info("byebye!\n", .{});
             return .Quit;
         },
-        else => .Continue,
+        else => {
+            return .Continue;
+        },
     };
 }
 
 pub fn main() !void {
     info("all your paint are belong to triangle!\n", .{});
     var GPA = std.heap.GeneralPurposeAllocator(.{}){};
-    alley = GPA.allocator();
+    var allocator = GPA.allocator();
 
-    const wat = zlm.vec2(0.1, 1.0);
-    info("wat: {any}\n", .{wat});
+    var layer_list = LayerList.init(allocator);
+    try layer_list.append(Layer{
+        .width = 10,
+        .height = 10,
+        .mark_list = MarkList.init(allocator),
+    });
 
-    var layer_bg_data = [1]?Mark{null} ** 100;
+    try layer_list.append(Layer{
+        .width = 20,
+        .height = 20,
+        .mark_list = MarkList.init(allocator),
+    });
 
-    layer_bg_data[23] = .{
-        .stamp = .Rect,
-        .color = .White,
-    };
-    var layer_fg_data = [1]?Mark{null} ** (20 * 20);
+    try layer_list.append(Layer{
+        .width = 40,
+        .height = 40,
+        .mark_list = MarkList.init(allocator),
+    });
+
+    var red_slider = Slider.init(.{
+        .origin_x = .Right,
+        .origin_y = .Bottom,
+        .width = 500,
+        .height = 50,
+        .offset_x = 630,
+        .offset_y = 70,
+        .bg_color = [3]f32{ 1, 0, 0 },
+    });
+
+    var green_slider = red_slider;
+    green_slider.offset_y += 60;
+    green_slider.bg_color = [3]f32{ 0, 1, 0 };
+
+    var blue_slider = green_slider;
+    blue_slider.bg_color = [3]f32{ 0, 0, 1 };
+    blue_slider.offset_y += 60;
+
+    var saturation_slider = blue_slider;
+    saturation_slider.bg_color = [3]f32{ 0, 0, 0 };
+    saturation_slider.fg_color = [3]f32{ 1, 1, 1 };
+    saturation_slider.offset_x += 510;
+    saturation_slider.offset_y = 70;
+
+    var light_slider = saturation_slider;
+    light_slider.bg_color = [3]f32{ 1, 1, 1 };
+    light_slider.fg_color = [3]f32{ 0, 0, 0 };
+    light_slider.offset_y += 60;
+
+    var hue_slider = light_slider;
+    hue_slider.bg_color = [3]f32{ 1, 1, 0 };
+    hue_slider.fg_color = [3]f32{ 0, 0, 0 };
+    hue_slider.offset_y += 60;
 
     const init_state: State = .{
-        .cursor_x = 0,
-        .cursor_y = 0,
-        .layer_bg_width = 10,
-        .layer_bg_height = 10,
-        .layer_bg_data = layer_bg_data[0..],
-        .layer_fg_width = 20,
-        .layer_fg_height = 20,
-        .layer_fg_data = layer_fg_data[0..],
+        .cursor = Cursor{
+            .x = 0,
+            .y = 0,
+        },
+        .allocator = allocator,
+        .layer_list = layer_list,
         .current_stamp = Stamp.Rect,
-        .current_color = Color.White,
-        .current_layer = Layer.Foreground,
+        .layer_index = 0,
+        .color = RGBColor{
+            .red = 0,
+            .green = 0,
+            .blue = 0,
+        },
+        .color_red_slider = Slider.init(.{
+            .origin_x = .Right,
+            .origin_y = .Bottom,
+            .width = 500,
+            .height = 50,
+            .offset_x = 630,
+            .offset_y = 70,
+            .bg_color = [3]f32{ 1, 0, 0 },
+        }),
+        .color_green_slider = green_slider,
+        .color_blue_slider = blue_slider,
+        .color_saturation_slider = saturation_slider,
+        .color_hue_slider = hue_slider,
+        .color_light_slider = light_slider,
     };
 
     var window = try Win.init(.{
-        .width = 1000,
-        .height = 1000 - 74,
+        .width = 1160,
+        .height = 1250,
         .title = "OKPT",
         .onLoad = &onLoad,
         .onDraw = &onDraw,
         .onKey = &onKey,
     }, init_state);
+
     defer window.deinit();
     try window.drawUntilQuit();
-}
-
-fn initizeShapes() void {
-    var vertex_data = [_]f32{
-        0, 0, // top_left
-        0, 1, // bottom_left
-        1, 1, // bottom_right
-        1, 0, // top_right
-    };
-
-    const top_left: c_uint = 0;
-    const bottom_left: c_uint = 1;
-    const bottom_right: c_uint = 2;
-    const top_right: c_uint = 3;
-
-    const triangle_a_index_list = [_]c_uint{
-        top_left,
-        top_right,
-        bottom_left,
-    };
-    triangle_a = Shape.initWithIndexBuffer(vertex_data[0..], triangle_a_index_list[0..]);
-
-    const triangle_b_index_list = [_]c_uint{
-        top_left,
-        top_right,
-        bottom_right,
-    };
-    triangle_b = Shape.initWithIndexBuffer(vertex_data[0..], triangle_b_index_list[0..]);
-
-    const triangle_c_index_list = [_]c_uint{
-        bottom_left,
-        bottom_right,
-        top_right,
-    };
-    triangle_c = Shape.initWithIndexBuffer(vertex_data[0..], triangle_c_index_list[0..]);
-
-    const triangle_d_index_list = [_]c_uint{
-        top_left,
-        bottom_left,
-        bottom_right,
-    };
-    triangle_d = Shape.initWithIndexBuffer(vertex_data[0..], triangle_d_index_list[0..]);
-
-    const rectangle_index_list = [_]c_uint{
-        top_left,
-        top_right,
-        bottom_left,
-
-        top_right,
-        bottom_left,
-        bottom_right,
-    };
-    rectangle = Shape.initWithIndexBuffer(vertex_data[0..], rectangle_index_list[0..]);
 }
