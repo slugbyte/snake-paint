@@ -17,6 +17,21 @@ const RGBColor = color.RGBColor;
 const HSLColor = color.HSLColor;
 const Stamp = stamp.Stamp;
 
+pub const ModeProgram = enum {
+    PalletBuilder,
+    Normal,
+    Insert,
+    Remove,
+    SnakeNormal,
+    SnakeInsert,
+    SnakeRemove,
+};
+
+pub const ModeOnKey = enum {
+    SelectMode,
+    Normal,
+};
+
 pub const Mark = struct {
     color: RGBColor,
     stamp: Stamp,
@@ -30,6 +45,11 @@ pub const Layer = struct {
     width: i32,
     height: i32,
     mark_list: MarkList,
+    is_visible: bool = true,
+
+    pub fn clear(self: *Layer) void {
+        self.mark_list.clearAndFree();
+    }
 };
 
 pub const LayerList = ArrayList(Layer);
@@ -37,15 +57,22 @@ pub const LayerList = ArrayList(Layer);
 pub const Cursor = struct {
     x: i32,
     y: i32,
+    is_wrap_mode: bool = true,
+    direction: ?Direction = .Down,
 
     pub const Direction = enum {
         Up,
         Down,
         Left,
         Right,
+        UpLeft,
+        UpRight,
+        DownLeft,
+        DownRight,
     };
 
-    pub fn move(self: *Cursor, layer: *const Layer, direction: Direction) void {
+    pub fn moveNoWrap(self: *Cursor, layer: *const Layer, direction: Direction) void {
+        self.direction = direction;
         switch (direction) {
             .Up => {
                 if (self.y > 0) {
@@ -63,7 +90,88 @@ pub const Cursor = struct {
             .Right => {
                 self.x = std.math.clamp(self.x + 1, 0, layer.width - 1);
             },
+            .UpLeft => {
+                self.moveNoWrap(layer, .Up);
+                self.moveNoWrap(layer, .Left);
+                self.direction = .UpLeft;
+            },
+            .UpRight => {
+                self.moveNoWrap(layer, .Up);
+                self.moveNoWrap(layer, .Right);
+                self.direction = .UpRight;
+            },
+            .DownLeft => {
+                self.moveNoWrap(layer, .Down);
+                self.moveNoWrap(layer, .Left);
+                self.direction = .DownLeft;
+            },
+            .DownRight => {
+                self.moveNoWrap(layer, .Down);
+                self.moveNoWrap(layer, .Right);
+                self.direction = .DownRight;
+            },
         }
+    }
+
+    pub fn moveWrap(self: *Cursor, layer: *const Layer, direction: Direction) void {
+        self.direction = direction;
+        switch (direction) {
+            .Up => {
+                if (self.y > 0) {
+                    self.y -= 1;
+                } else {
+                    self.y = layer.height - 1;
+                }
+            },
+            .Left => {
+                if (self.x > 0) {
+                    self.x -= 1;
+                } else {
+                    self.x = layer.width - 1;
+                }
+            },
+            .Down => {
+                if (self.y < layer.height - 1) {
+                    self.y += 1;
+                } else {
+                    self.y = 0;
+                }
+            },
+            .Right => {
+                if (self.x < layer.width - 1) {
+                    self.x += 1;
+                } else {
+                    self.x = 0;
+                }
+            },
+            .UpLeft => {
+                self.moveWrap(layer, .Up);
+                self.moveWrap(layer, .Left);
+                self.direction = .UpLeft;
+            },
+            .UpRight => {
+                self.moveWrap(layer, .Up);
+                self.moveWrap(layer, .Right);
+                self.direction = .UpRight;
+            },
+            .DownLeft => {
+                self.moveWrap(layer, .Down);
+                self.moveWrap(layer, .Left);
+                self.direction = .DownLeft;
+            },
+            .DownRight => {
+                self.moveWrap(layer, .Down);
+                self.moveWrap(layer, .Right);
+                self.direction = .DownRight;
+            },
+        }
+    }
+
+    pub fn move(self: *Cursor, layer: *const Layer, direction: Direction) void {
+        if (self.is_wrap_mode) {
+            return self.moveWrap(layer, direction);
+        }
+        return self.moveNoWrap(layer, direction);
     }
 };
 
@@ -76,8 +184,8 @@ pub const State = struct {
 
     cursor: Cursor,
     current_stamp: Stamp,
-
-    is_togle_mode: bool = false,
+    mode_program: ModeProgram = .Normal,
+    mode_on_key: ModeOnKey = .Normal,
     show_cursor: bool = true,
     show_hud: bool = true,
 
@@ -108,6 +216,11 @@ pub const State = struct {
         self.cursor.y = std.math.clamp(@divFloor(cursor_y_in_px, cursor_height), 0, next_layer.height - 1);
     }
 
+    pub fn layerClear(self: *State) void {
+        const current_layer = &self.layer_list.items[self.layer_index];
+        current_layer.clear();
+    }
+
     pub fn stampNext(self: *State) void {
         self.current_stamp = switch (self.current_stamp) {
             .Rect => .TriA,
@@ -116,6 +229,11 @@ pub const State = struct {
             .TriC => .TriD,
             .TriD => .Rect,
         };
+    }
+
+    pub fn layerIsVisibleToggle(self: *State) void {
+        const current_layer = &self.layer_list.items[self.layer_index];
+        current_layer.is_visible = !current_layer.is_visible;
     }
 
     pub fn markInsert(self: *State) !void {
@@ -152,5 +270,55 @@ pub const State = struct {
                 _ = mark_list.swapRemove(0);
             }
         }
+    }
+
+    pub fn markUpdate(self: *State) !void {
+        if (self.isInsertMode()) {
+            try self.markInsert();
+        }
+
+        if (self.isRemoveMode()) {
+            try self.markRemove();
+        }
+    }
+
+    pub fn cursorMove(self: *State, direction: Cursor.Direction) !void {
+        const current_layer = &self.layer_list.items[self.layer_index];
+        if (self.isSnakeMode()) {
+            self.cursor.direction = direction;
+            return;
+        }
+
+        self.cursor.move(current_layer, direction);
+        if (self.isInsertMode()) {
+            try self.markInsert();
+        }
+        if (self.isRemoveMode()) {
+            try self.markRemove();
+        }
+    }
+
+    pub fn snakeModeToggle(self: *State) void {
+        self.mode_program = switch (self.mode_program) {
+            .Normal => .SnakeNormal,
+            .Insert => .SnakeInsert,
+            .Remove => .SnakeRemove,
+            .SnakeNormal => .Normal,
+            .SnakeInsert => .Insert,
+            .SnakeRemove => .Remove,
+            else => .SnakeNormal,
+        };
+    }
+
+    pub fn isSnakeMode(self: *State) bool {
+        return self.mode_program == .SnakeNormal or self.mode_program == .SnakeInsert or self.mode_program == .SnakeRemove;
+    }
+
+    pub fn isInsertMode(self: *State) bool {
+        return self.mode_program == .Insert or self.mode_program == .SnakeInsert;
+    }
+
+    pub fn isRemoveMode(self: *State) bool {
+        return self.mode_program == .Remove or self.mode_program == .SnakeRemove;
     }
 };

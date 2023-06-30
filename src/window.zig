@@ -24,6 +24,8 @@ pub fn Window(comptime state: type) type {
         mouse_state: MouseState,
         window_size: WindowSize,
         title: []const u8,
+        delta_time: f32 = 0,
+        frame: u32 = 0,
         onLoad: *const fn (window: *Self, state: *state) anyerror!Action,
         onDraw: *const fn (window: *Self, state: *state) anyerror!void,
         onKey: *const fn (window: *Self, state: *state, key: Key) anyerror!Action,
@@ -79,9 +81,13 @@ pub fn Window(comptime state: type) type {
             Num7 = c.GLFW_KEY_7,
             Num8 = c.GLFW_KEY_8,
             Num9 = c.GLFW_KEY_9,
+            Comma = c.GLFW_KEY_COMMA,
+            Period = c.GLFW_KEY_PERIOD,
+            Enter = c.GLFW_KEY_ENTER,
             Space = c.GLFW_KEY_SPACE,
             Backspace = c.GLFW_KEY_BACKSPACE,
             Escape = c.GLFW_KEY_ESCAPE,
+            Delete = c.GLFW_KEY_DELETE,
             Tab = c.GLFW_KEY_TAB,
             Up = c.GLFW_KEY_UP, // up
             Down = c.GLFW_KEY_DOWN, // down
@@ -191,7 +197,14 @@ pub fn Window(comptime state: type) type {
                 return;
             }
 
+            var previous_time: f32 = @floatCast(f32, c.glfwGetTime());
+            var current_time: f32 = @floatCast(f32, c.glfwGetTime());
+
             while (c.glfwWindowShouldClose(self.glfw_window) != 1) {
+                current_time = @floatCast(f32, c.glfwGetTime());
+                self.delta_time = previous_time - current_time;
+                previous_time = current_time;
+                self.frame += 1;
                 self.updateWindowSize();
                 self.updateMousePosition();
                 if (try self.handleInput() == .Quit) {

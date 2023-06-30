@@ -46,23 +46,25 @@ pub fn drawCanvasBackground(win: *Win, state: *State) void {
     cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.window_size.width), @intToFloat(f32, win.window_size.height));
     cell_shader.setUniformVec2("canvas_size", @intToFloat(f32, state.canvas_width), @intToFloat(f32, state.canvas_width));
     cell_shader.setUniformVec4("cell_spec", 0, 0, canvas_width, canvas_height);
-    cell_shader.setUniformVec3("fg_color", 1, 1, 1);
+    cell_shader.setUniformVec3("fg_color", 0.7, 0.7, 0.7);
     stamp.rectangle.render();
 }
 
 pub fn drawLayerList(win: *Win, state: *State) void {
     for (state.layer_list.items) |layer| {
-        for (layer.mark_list.items) |mark| {
-            const mark_width = @intToFloat(f32, state.canvas_width) / @intToFloat(f32, layer.width);
-            const mark_height = @intToFloat(f32, state.canvas_height) / @intToFloat(f32, layer.height);
-            const mark_x = @intToFloat(f32, mark.x);
-            const mark_y = @intToFloat(f32, mark.y);
-            cell_shader.bind();
-            cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.window_size.width), @intToFloat(f32, win.window_size.height));
-            cell_shader.setUniformVec2("canvas_size", @intToFloat(f32, state.canvas_width), @intToFloat(f32, state.canvas_height));
-            cell_shader.setUniformVec4("cell_spec", mark_x, mark_y, mark_width, mark_height);
-            cell_shader.setUniformVec3("fg_color", mark.color.red, mark.color.green, mark.color.blue);
-            mark.stamp.draw();
+        if (layer.is_visible) {
+            for (layer.mark_list.items) |mark| {
+                const mark_width = @intToFloat(f32, state.canvas_width) / @intToFloat(f32, layer.width);
+                const mark_height = @intToFloat(f32, state.canvas_height) / @intToFloat(f32, layer.height);
+                const mark_x = @intToFloat(f32, mark.x);
+                const mark_y = @intToFloat(f32, mark.y);
+                cell_shader.bind();
+                cell_shader.setUniformVec2("window_size", @intToFloat(f32, win.window_size.width), @intToFloat(f32, win.window_size.height));
+                cell_shader.setUniformVec2("canvas_size", @intToFloat(f32, state.canvas_width), @intToFloat(f32, state.canvas_height));
+                cell_shader.setUniformVec4("cell_spec", mark_x, mark_y, mark_width, mark_height);
+                cell_shader.setUniformVec3("fg_color", mark.color.red, mark.color.green, mark.color.blue);
+                mark.stamp.draw();
+            }
         }
     }
 }
@@ -119,8 +121,20 @@ pub fn drawHud(win: *Win, state: *State) void {
     state.current_stamp.draw();
 }
 
+pub fn updateSnakeMode(win: *Win, state: *State) !void {
+    if (state.isSnakeMode()) {
+        if (@mod(win.frame, 40) == 0) {
+            if (state.cursor.direction) |direction| {
+                state.cursor.move(&state.layer_list.items[state.layer_index], direction);
+                try state.markUpdate();
+            }
+        }
+    }
+}
+
 // onDraw happens once per frame after onKey
 pub fn onDraw(win: *Win, state: *State) !void {
+    try updateSnakeMode(win, state);
     drawCanvasBackground(win, state);
     drawLayerList(win, state);
     if (state.show_cursor) {
@@ -134,73 +148,86 @@ pub fn onDraw(win: *Win, state: *State) !void {
 // onKey happens once per frame when before onDraw
 pub fn onKey(win: *Win, state: *State, key: Win.Key) !Win.Action {
     _ = win;
-    return switch (key) {
-        .O => {
-            const current_layer = &state.layer_list.items[state.layer_index];
-            state.cursor.move(current_layer, .Right);
-            return .Continue;
+    if (key == .Q) {
+        info("byebye\n", .{});
+        return .Quit;
+    }
+
+    if (state.mode_on_key == .SelectMode) {
+        state.mode_on_key = .Normal;
+        switch (key) {
+            .Escape => {
+                state.mode_program = .Normal;
+            },
+            .Space => {
+                try state.markInsert();
+                state.mode_program = .Insert;
+            },
+            .Backspace => {
+                try state.markRemove();
+                state.mode_program = .Remove;
+            },
+            .C => {
+                state.show_cursor = !state.show_cursor;
+            },
+            .H => {
+                state.show_hud = !state.show_hud;
+            },
+            .V => {
+                state.layerIsVisibleToggle();
+            },
+            .S => state.snakeModeToggle(),
+            else => {},
+        }
+        return .Continue;
+    }
+
+    try switch (key) {
+        .U => state.cursorMove(.Up),
+        .Comma => state.cursorMove(.Down),
+        .E => state.cursorMove(.Down),
+        .N => state.cursorMove(.Left),
+        .O => state.cursorMove(.Right),
+        .F => state.cursorMove(.UpLeft),
+        .P => state.cursorMove(.UpRight),
+        .L => state.cursorMove(.DownLeft),
+        .Period => state.cursorMove(.DownRight),
+        .J => state.snakeModeToggle(),
+        .Y => state.stampNext(),
+        .K => state.layerNext(),
+        .Escape => state.layerClear(),
+        .Enter => {
+            try state.markInsert();
+            if (state.isSnakeMode()) {
+                state.mode_program = switch (state.mode_program) {
+                    .SnakeInsert => .SnakeNormal,
+                    else => .SnakeInsert,
+                };
+            }
         },
-        .Y => {
-            const current_layer = &state.layer_list.items[state.layer_index];
-            state.cursor.move(current_layer, .Left);
-            return .Continue;
-        },
-        .E => {
-            const current_layer = &state.layer_list.items[state.layer_index];
-            state.cursor.move(current_layer, .Up);
-            return .Continue;
-        },
-        .N => {
-            const current_layer = &state.layer_list.items[state.layer_index];
-            state.cursor.move(current_layer, .Down);
-            return .Continue;
-        },
-        .L => {
-            state.layerNext();
-            return .Continue;
+        .Delete => {
+            try state.markRemove();
+            if (state.isSnakeMode()) {
+                state.mode_program = switch (state.mode_program) {
+                    .SnakeRemove => .SnakeNormal,
+                    else => .SnakeRemove,
+                };
+            }
         },
         .T => {
-            state.is_togle_mode = true;
-            return .Continue;
-        },
-        .Escape => {
-            state.is_togle_mode = false;
-            return .Continue;
-        },
-        .C => {
-            if (state.is_togle_mode) {
-                state.show_cursor = !state.show_cursor;
-                state.is_togle_mode = false;
-            }
-            return .Continue;
-        },
-        .H => {
-            if (state.is_togle_mode) {
-                state.show_hud = !state.show_hud;
-                state.is_togle_mode = false;
-            }
-            return .Continue;
-        },
-        .Space => {
-            try state.markInsert();
-            return .Continue;
+            state.mode_on_key = switch (state.mode_on_key) {
+                .SelectMode => .Normal,
+                .Normal => .SelectMode,
+            };
         },
         .Backspace => {
-            try state.markRemove();
+            state.mode_program = .Normal;
+            state.mode_on_key = .Normal;
             return .Continue;
         },
-        .S => {
-            state.stampNext();
-            return .Continue;
-        },
-        .Q => {
-            info("byebye!\n", .{});
-            return .Quit;
-        },
-        else => {
-            return .Continue;
-        },
+        else => {},
     };
+    return .Continue;
 }
 
 pub fn main() !void {
@@ -224,6 +251,12 @@ pub fn main() !void {
     try layer_list.append(Layer{
         .width = 40,
         .height = 40,
+        .mark_list = MarkList.init(allocator),
+    });
+
+    try layer_list.append(Layer{
+        .width = 80,
+        .height = 80,
         .mark_list = MarkList.init(allocator),
     });
 
